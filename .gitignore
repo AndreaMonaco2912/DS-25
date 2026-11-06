@@ -1,0 +1,16 @@
+# sbt / build output
+target/
+project/target/
+project/project/
+.bsp/
+.metals/
+.bloop/
+out/
+
+# IntelliJ
+.idea/
+*.iml
+
+# misc
+.DS_Store
+*.log
