@@ -9,11 +9,11 @@ lazy val root = (project in file("."))
     name := "DS-25",
 
     libraryDependencies ++= Seq(
-      "org.apache.pekko" %% "pekko-actor"         % pekkoVersion,
-      "org.apache.pekko" %% "pekko-slf4j"         % pekkoVersion,
-      "ch.qos.logback"    % "logback-classic"     % "1.5.38",
-      "org.apache.pekko" %% "pekko-testkit"       % pekkoVersion % Test,
-      "com.github.sbt"    % "junit-interface"     % "0.13.3"     % Test
+      "org.scalatest" %% "scalatest" % "3.2.20" % Test,
+      "org.apache.pekko" %% "pekko-actor-typed" % pekkoVersion,
+      "org.apache.pekko" %% "pekko-actor-testkit-typed" % pekkoVersion % Test,
+      "com.typesafe.scala-logging" %% "scala-logging" % "3.9.6",
+      "ch.qos.logback" % "logback-classic" % "1.6.6"
     ),
 
     javacOptions ++= Seq("-Xlint:unchecked", "-Xlint:deprecation"),
