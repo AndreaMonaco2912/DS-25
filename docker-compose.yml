@@ -1,9 +1,11 @@
-# 2 trackers (a Pekko Cluster) behind one endpoint, and 2 clients sharing a file.
+# 3 trackers (a Pekko Cluster) behind one endpoint, and 2 clients with a web GUI.
 #
 #   sbt tracker/Docker/publishLocal client/Docker/publishLocal
 #   docker compose up
 #
-# Swarm-registry consistency: CONSISTENCY=majority docker compose up   (default: local)
+# GUIs: client A on http://localhost:8081, client B on http://localhost:8082
+#
+# Swarm-registry consistency: CONSISTENCY=majority docker compose up   (default: local, see README "CP vs AP")
 
 # `dns_search: .` makes container names resolve only through Docker's DNS. Otherwise the host's search domain
 # is inherited, and some home routers answer 127.0.0.1 for unknown names (e.g. `t1` while it is down), which
@@ -22,6 +24,7 @@ x-tracker-env: &tracker-env
 x-seed-nodes: &seed-nodes >-
   -Dpekko.cluster.seed-nodes.0=pekko://tracker@t1:25520
   -Dpekko.cluster.seed-nodes.1=pekko://tracker@t2:25520
+  -Dpekko.cluster.seed-nodes.2=pekko://tracker@t3:25520
 
 x-client: &client
   image: ds25-client:latest
@@ -39,10 +42,11 @@ services:
       <<: *tracker-env
       TRACKER_ID: T1
       CANONICAL_HOST: t1
-      # If t1 restarts while t2 is up, wait long enough for t2 to answer instead of forming a second cluster.
+      # If t1 restarts while the others are up, wait long enough for them to answer instead of forming a second cluster.
       JAVA_OPTS: >-
         -Dpekko.cluster.seed-nodes.0=pekko://tracker@t1:25520
         -Dpekko.cluster.seed-nodes.1=pekko://tracker@t2:25520
+        -Dpekko.cluster.seed-nodes.2=pekko://tracker@t3:25520
         -Dpekko.cluster.seed-node-timeout=30s
 
   t2:
@@ -54,11 +58,20 @@ services:
       CANONICAL_HOST: t2
       JAVA_OPTS: *seed-nodes
 
+  t3:
+    <<: *tracker
+    hostname: t3
+    environment:
+      <<: *tracker-env
+      TRACKER_ID: T3
+      CANONICAL_HOST: t3
+      JAVA_OPTS: *seed-nodes
+
   # The only tracker address clients know.
   tracker:
     image: nginx:alpine
     networks: [ds-net]
-    depends_on: [t1, t2]
+    depends_on: [t1, t2, t3]
     volumes:
       - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
@@ -71,9 +84,8 @@ services:
       PEER_ID: A
       CANONICAL_HOST: client-a
       TRACKER_URL: http://tracker:8080
-      INFO_HASH: demo-file
-      TOTAL_PIECES: "8"
-      PIECES: "0-3"
+    ports:
+      - "8081:8080"
 
   client-b:
     <<: *client
@@ -82,9 +94,8 @@ services:
       PEER_ID: B
       CANONICAL_HOST: client-b
       TRACKER_URL: http://tracker:8080
-      INFO_HASH: demo-file
-      TOTAL_PIECES: "8"
-      PIECES: "4-7"
+    ports:
+      - "8082:8080"
 
 networks:
   ds-net:

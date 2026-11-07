@@ -54,7 +54,7 @@ final class TrackerRoutes(
       get(complete(s"OK $trackerId"))
     },
     path("cluster") {
-      // This tracker's view of the tracker cluster: with a split brain the two trackers disagree.
+      // This tracker's view of the tracker cluster: during a partition the trackers disagree.
       get(complete(s"$trackerId sees ${clusterMembers().mkString("[", ", ", "]")}"))
     }
   )

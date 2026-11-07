@@ -47,7 +47,7 @@ object TrackerMain:
       Behaviors.empty
     }
 
-  /** Logs cluster membership changes, handy to watch T1/T2 find each other. */
+  /** Logs cluster membership changes, handy to watch the trackers find each other. */
   private def clusterListener(): Behavior[ClusterEvent.ClusterDomainEvent] =
     Behaviors.setup { context =>
       Cluster(context.system).subscriptions ! Subscribe(context.self, classOf[ClusterEvent.ClusterDomainEvent])

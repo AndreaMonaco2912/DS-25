@@ -13,10 +13,10 @@ import scala.concurrent.Future
 import scala.concurrent.duration.*
 import scala.util.{Failure, Success}
 
-/** Periodically announces this peer to the tracker endpoint and forwards the peer list to [[Peer]].
+/** Periodically announces this peer, for one torrent, to the tracker endpoint and forwards the peer list to [[Peer]].
  *
- * The client only knows one URL; behind it a load balancer picks T1 or T2, which is visible in the
- * `trackerId` of each response.
+ * The client only knows one URL (the torrent's `announce`); behind it a load balancer picks T1, T2 or T3, which
+ * is visible in the `trackerId` of each response.
  */
 object Announcer:
 

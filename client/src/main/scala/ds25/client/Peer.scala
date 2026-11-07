@@ -2,60 +2,61 @@ package ds25.client
 
 import ds25.protocol.{PeerAddress, PeerInfo, PeerMsg}
 import ds25.protocol.PeerMsg.*
+import ds25.torrent.Torrent
 import org.apache.pekko.actor.typed.scaladsl.{ActorContext, Behaviors}
 import org.apache.pekko.actor.typed.{ActorRef, ActorRefResolver, Behavior}
 
 import scala.concurrent.duration.*
 import scala.util.Random
 
-/** A peer sharing one file split into `totalPieces` pieces.
+/** This client's part in the swarm of one [[Torrent]].
   *
-  * It starts with the pieces in `initialPieces`, contacts the peers the tracker tells it about and downloads
-  * the missing pieces from them, while serving its own pieces to whoever asks.
+  * It starts with `initialPieces` (all of them when seeding, none when downloading), contacts the peers the
+  * tracker tells it about and downloads the missing pieces from them, while serving its own pieces to whoever
+  * asks. Received pieces are checked against the hashes in the torrent.
   */
 object Peer:
 
   /** New peer list from the tracker (local message, sent by [[Announcer]]). */
   final case class PeersDiscovered(peers: List[PeerInfo])
 
-  /** Ask for the pieces this peer currently has (local message, for tests and monitoring). */
+  /** Progress of this torrent (local message, for the GUI and tests). */
   final case class GetStatus(replyTo: ActorRef[Status])
-  final case class Status(peerId: String, have: Set[Int], complete: Boolean)
+  final case class Status(torrent: Torrent, have: Set[Int], peers: Set[String]):
+    def complete: Boolean = have.size == torrent.pieceCount
 
-  type Command = PeerMsg | PeersDiscovered | GetStatus
+  /** The whole file, once every piece is here (local message). */
+  final case class GetFile(replyTo: ActorRef[Option[Array[Byte]]])
+
+  type Command = PeerMsg | PeersDiscovered | GetStatus | GetFile
+
+  /** Pieces requested at the same time, so that big files are fetched gradually and from several peers. */
+  val MaxInFlight = 4
 
   /** Default way of reaching a peer: Pekko remoting, by the actor-path naming convention. */
-  def remoteResolver(context: ActorContext[?]): PeerInfo => ActorRef[PeerMsg] =
+  def remoteResolver(context: ActorContext[?], infoHash: String): PeerInfo => ActorRef[PeerMsg] =
     val resolver = ActorRefResolver(context.system)
-    info => resolver.resolveActorRef[PeerMsg](PeerAddress.actorPath(info.host, info.port))
+    info => resolver.resolveActorRef[PeerMsg](PeerAddress.actorPath(info.host, info.port, infoHash))
 
   def apply(
       peerId: String,
-      infoHash: String,
-      totalPieces: Int,
-      initialPieces: Set[Int],
+      torrent: Torrent,
+      initialPieces: Map[Int, Array[Byte]],
       serveDelay: FiniteDuration = 300.millis,
       resolve: Option[PeerInfo => ActorRef[PeerMsg]] = None
   ): Behavior[Command] =
     Behaviors.setup { context =>
-      val pieces = initialPieces.filter(i => i >= 0 && i < totalPieces).map(i => i -> pieceData(infoHash, i)).toMap
-      context.log.info("Peer {} has pieces {} of {}", peerId, sorted(pieces.keySet), totalPieces)
-      new Peer(context, peerId, infoHash, totalPieces, serveDelay, resolve.getOrElse(remoteResolver(context)))
-        .running(pieces, known = Map.empty, requested = Set.empty)
+      context.log.info("Peer {} has {}/{} pieces of {}", peerId, initialPieces.size, torrent.pieceCount, torrent.name)
+      val peer = new Peer(context, peerId, torrent, serveDelay, resolve.getOrElse(remoteResolver(context, torrent.infoHash)))
+      peer.running(initialPieces, known = Map.empty, requested = Set.empty)
     }
-
-  /** Content of a piece; deterministic so that every peer agrees on the "file". */
-  def pieceData(infoHash: String, index: Int): String = s"$infoHash#piece-$index"
-
-  private def sorted(s: Set[Int]): String = s.toList.sorted.mkString("[", ",", "]")
 
   private final case class Remote(ref: ActorRef[PeerMsg], have: Set[Int])
 
 private final class Peer(
     context: ActorContext[Peer.Command],
     peerId: String,
-    infoHash: String,
-    totalPieces: Int,
+    torrent: Torrent,
     serveDelay: FiniteDuration,
     resolve: PeerInfo => ActorRef[PeerMsg]
 ):
@@ -63,32 +64,33 @@ private final class Peer(
 
   private val self: ActorRef[PeerMsg] = context.self
 
+  /** Ask a random holder for missing pieces that aren't already on their way, up to [[MaxInFlight]]. */
+  private def requestMissing(pieces: Map[Int, Array[Byte]], known: Map[String, Remote], requested: Set[Int]): Set[Int] =
+    val asked = (0 until torrent.pieceCount).iterator
+      .filterNot(i => pieces.contains(i) || requested.contains(i))
+      .flatMap { index =>
+        val holders = known.collect { case (id, r) if r.have(index) => id -> r }.toVector
+        Option.when(holders.nonEmpty)(index -> holders(Random.nextInt(holders.size)))
+      }
+      .take(MaxInFlight - requested.size)
+      .map { case (index, (holderId, holder)) =>
+        context.log.debug("Peer {} requests piece {} from {}", peerId, index, holderId)
+        holder.ref ! RequestPiece(index, self)
+        index
+      }
+      .toSet
+    requested ++ asked
+
   /** @param pieces    pieces we own (index -> data)
     * @param known     peers that completed a handshake with us
     * @param requested pieces asked for and not yet received
     */
-  private def running(pieces: Map[Int, String], known: Map[String, Remote], requested: Set[Int]): Behavior[Command] =
-
-    def complete = pieces.size == totalPieces
-
-    /** Ask a random holder for every missing piece that isn't already on its way. */
-    def requestMissing(known: Map[String, Remote], requested: Set[Int]): Set[Int] =
-      val wanted = (0 until totalPieces).filterNot(i => pieces.contains(i) || requested.contains(i))
-      val asked = wanted.flatMap { index =>
-        val holders = known.collect { case (id, r) if r.have(index) => id -> r }.toVector
-        Option.when(holders.nonEmpty) {
-          val (holderId, holder) = holders(Random.nextInt(holders.size))
-          context.log.debug("Peer {} requests piece {} from {}", peerId, index, holderId)
-          holder.ref ! RequestPiece(index, self)
-          index
-        }
-      }
-      requested ++ asked
+  private def running(pieces: Map[Int, Array[Byte]], known: Map[String, Remote], requested: Set[Int]): Behavior[Command] =
 
     def learned(otherId: String, ref: ActorRef[PeerMsg], have: Set[Int]): Behavior[Command] =
-      if !known.contains(otherId) then context.log.info("Peer {} connected to {} (has {})", peerId, otherId, sorted(have))
+      if !known.contains(otherId) then context.log.info("Peer {} connected to {} ({} pieces)", peerId, otherId, have.size)
       val newKnown = known.updated(otherId, Remote(ref, have))
-      running(pieces, newKnown, requestMissing(newKnown, requested))
+      running(pieces, newKnown, requestMissing(pieces, newKnown, requested))
 
     Behaviors.receiveMessage {
       case PeersDiscovered(peers) =>
@@ -97,7 +99,8 @@ private final class Peer(
           context.log.info("Peer {} contacting {} at {}:{}", peerId, p.peerId, p.host, p.port)
           resolve(p) ! Handshake(peerId, pieces.keySet, self)
         }
-        Behaviors.same
+        // Requests sent to a peer that has since died are never answered: ask again, duplicates are ignored.
+        running(pieces, known, requestMissing(pieces, known, Set.empty))
 
       case Handshake(otherId, have, replyTo) =>
         replyTo ! HandshakeAck(peerId, pieces.keySet, self)
@@ -110,25 +113,35 @@ private final class Peer(
         known.get(otherId) match
           case Some(r) =>
             val newKnown = known.updated(otherId, r.copy(have = r.have + index))
-            running(pieces, newKnown, requestMissing(newKnown, requested))
+            running(pieces, newKnown, requestMissing(pieces, newKnown, requested))
           case None => Behaviors.same
 
       case RequestPiece(index, replyTo) =>
-        // The delay only makes the exchange slow enough to follow in the logs.
+        // The delay only makes the exchange slow enough to follow in the GUI and the logs.
         pieces.get(index).foreach(data => context.scheduleOnce(serveDelay, replyTo, Piece(peerId, index, data)))
         Behaviors.same
 
       case Piece(fromId, index, data) if !pieces.contains(index) =>
-        val newPieces = pieces.updated(index, data)
-        context.log.info("Peer {} got piece {} from {} ({}/{})", peerId, index, fromId, newPieces.size, totalPieces)
-        known.values.foreach(_.ref ! Have(peerId, index))
-        if newPieces.size == totalPieces then context.log.info("Peer {} DOWNLOAD COMPLETE: {}", peerId, infoHash)
-        running(newPieces, known, requested - index)
+        if !torrent.isValidPiece(index, data) then
+          context.log.warn("Peer {} got a corrupt piece {} from {}, dropped", peerId, index, fromId)
+          running(pieces, known, requestMissing(pieces, known, requested - index))
+        else
+          val newPieces = pieces.updated(index, data)
+          context.log.info("Peer {} got piece {} from {} ({}/{})", peerId, index, fromId, newPieces.size, torrent.pieceCount)
+          known.values.foreach(_.ref ! Have(peerId, index))
+          if newPieces.size == torrent.pieceCount then
+            context.log.info("Peer {} DOWNLOAD COMPLETE: {}", peerId, torrent.name)
+          running(newPieces, known, requestMissing(newPieces, known, requested - index))
 
       case Piece(_, _, _) =>
         Behaviors.same // duplicate
 
       case GetStatus(replyTo) =>
-        replyTo ! Status(peerId, pieces.keySet, complete)
+        replyTo ! Status(torrent, pieces.keySet, known.keySet)
+        Behaviors.same
+
+      case GetFile(replyTo) =>
+        val complete = pieces.size == torrent.pieceCount
+        replyTo ! Option.when(complete)((0 until torrent.pieceCount).toArray.flatMap(pieces))
         Behaviors.same
     }

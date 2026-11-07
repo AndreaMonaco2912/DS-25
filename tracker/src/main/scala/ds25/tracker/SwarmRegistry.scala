@@ -11,9 +11,10 @@ import scala.concurrent.duration.*
 /** Swarm registry shared by all trackers: infoHash -> peers in that swarm.
   *
   * The state is an `ORMultiMap` CRDT replicated by Pekko Distributed Data, so a peer that announced to T1
-  * is also returned by T2. The consistency level decides what happens while trackers are disconnected:
-  *  - `Local`:    reads/writes succeed on the local replica, others learn by gossip (AP, eventually consistent)
-  *  - `Majority`: reads/writes need a majority of trackers (with 2 trackers: both) (CP, may fail)
+  * is also returned by T2 and T3. The consistency level decides what happens while trackers are disconnected:
+  *  - `Local` (default): reads/writes succeed on the local replica, others learn by gossip (AP, eventually
+  *    consistent). A stale peer list is harmless: clients announce again every few seconds.
+  *  - `Majority`: reads/writes need a majority of trackers (2 of 3) (CP, may fail with `Unavailable`)
   */
 object SwarmRegistry:
 

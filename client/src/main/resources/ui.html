@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DS-25 client</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; color: #222; }
+    h1 span { color: #888; font-weight: normal; }
+    section { margin-bottom: 2rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: .4rem; border-bottom: 1px solid #ddd; }
+    progress { width: 8rem; }
+    .muted { color: #888; }
+  </style>
+</head>
+<body>
+<h1>DS-25 client <span id="peer"></span></h1>
+
+<section>
+  <h2>Share a file</h2>
+  <form method="post" action="share" enctype="multipart/form-data">
+    <input type="file" name="file" required> <button>Share</button>
+  </form>
+  <p class="muted">Starts seeding the file. Give its .tor (link in the list below) to other clients.</p>
+</section>
+
+<section>
+  <h2>Download from a .tor</h2>
+  <form method="post" action="download" enctype="multipart/form-data">
+    <input type="file" name="torrent" required> <button>Download</button>
+  </form>
+</section>
+
+<section>
+  <h2>Torrents</h2>
+  <table>
+    <thead><tr><th>Name</th><th>Size</th><th>Progress</th><th>Connected peers</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</section>
+
+<script>
+  function cell(row, content) {
+    const td = row.insertCell();
+    if (content instanceof Node) td.append(content); else td.textContent = content;
+  }
+
+  function link(href, text) {
+    const a = document.createElement('a');
+    a.href = href;
+    a.textContent = text;
+    return a;
+  }
+
+  async function refresh() {
+    try {
+      const view = await (await fetch('torrents')).json();
+      document.getElementById('peer').textContent = view.peerId;
+      const rows = document.getElementById('rows');
+      rows.replaceChildren();
+      for (const t of view.torrents) {
+        const row = rows.insertRow();
+        cell(row, t.name);
+        cell(row, (t.length / 1024).toFixed(1) + ' KiB');
+        const bar = document.createElement('progress');
+        bar.max = Math.max(t.pieces, 1);
+        bar.value = t.complete ? bar.max : t.have;
+        const progress = document.createElement('span');
+        progress.append(bar, ` ${t.have}/${t.pieces}`);
+        cell(row, progress);
+        cell(row, t.peers.join(', ') || '-');
+        const links = document.createElement('span');
+        links.append(link(`torrents/${t.infoHash}/tor`, '.tor'));
+        if (t.complete) links.append(' · ', link(`torrents/${t.infoHash}/file`, 'file'));
+        cell(row, links);
+      }
+    } catch (e) {
+      console.warn('refresh failed', e);
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 1000);
+</script>
+</body>
+</html>

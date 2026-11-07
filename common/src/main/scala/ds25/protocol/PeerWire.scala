@@ -4,6 +4,7 @@ import org.apache.pekko.actor.typed.ActorRef
 
 /** Peer-to-peer protocol, a toy version of the BitTorrent peer wire protocol.
  * A file is split into numbered pieces; peers exchange which pieces they have and download missing ones.
+ * Every message is about one torrent: the one of the actor it is sent to (see [[PeerAddress]]).
  */
 sealed trait PeerMsg extends CborSerializable
 
@@ -19,13 +20,14 @@ object PeerMsg:
 
   final case class RequestPiece(index: Int, replyTo: ActorRef[PeerMsg]) extends PeerMsg
 
-  final case class Piece(peerId: String, index: Int, data: String) extends PeerMsg
+  final case class Piece(peerId: String, index: Int, data: Array[Byte]) extends PeerMsg
 
-/** By convention every client runs an actor system called [[SystemName]] with its peer actor at [[ActorName]],
- * so an address handed out by the tracker is enough to reach the peer.
+/** By convention every client runs an actor system called [[SystemName]], with one actor per torrent at
+ * `/user/[[ActorName]]/<infoHash>`, so an address handed out by the tracker is enough to reach the peer.
  */
 object PeerAddress:
   val SystemName = "client"
-  val ActorName = "peer"
+  val ActorName = "torrents"
 
-  def actorPath(host: String, port: Int): String = s"pekko://$SystemName@$host:$port/user/$ActorName"
+  def actorPath(host: String, port: Int, infoHash: String): String =
+    s"pekko://$SystemName@$host:$port/user/$ActorName/$infoHash"
