@@ -1,0 +1,90 @@
+# 2 trackers (a Pekko Cluster) behind one endpoint, and 2 clients sharing a file.
+#
+#   sbt tracker/Docker/publishLocal client/Docker/publishLocal
+#   docker compose up
+#
+# Swarm-registry consistency: CONSISTENCY=majority docker compose up   (default: local)
+
+# `dns_search: .` makes container names resolve only through Docker's DNS. Otherwise the host's search domain
+# is inherited, and some home routers answer 127.0.0.1 for unknown names (e.g. `t1` while it is down), which
+# makes a node try to connect to itself.
+
+x-tracker: &tracker
+  image: ds25-tracker:latest
+  restart: unless-stopped
+  networks: [ds-net]
+  dns_search: .
+
+x-tracker-env: &tracker-env
+  CONSISTENCY: ${CONSISTENCY:-local}
+  ANNOUNCE_INTERVAL: "5"
+
+x-seed-nodes: &seed-nodes >-
+  -Dpekko.cluster.seed-nodes.0=pekko://tracker@t1:25520
+  -Dpekko.cluster.seed-nodes.1=pekko://tracker@t2:25520
+
+x-client: &client
+  image: ds25-client:latest
+  restart: unless-stopped
+  networks: [ds-net]
+  dns_search: .
+  depends_on: [tracker]
+
+services:
+  # t1 is the first seed node: the only one allowed to form a new cluster by itself.
+  t1:
+    <<: *tracker
+    hostname: t1
+    environment:
+      <<: *tracker-env
+      TRACKER_ID: T1
+      CANONICAL_HOST: t1
+      # If t1 restarts while t2 is up, wait long enough for t2 to answer instead of forming a second cluster.
+      JAVA_OPTS: >-
+        -Dpekko.cluster.seed-nodes.0=pekko://tracker@t1:25520
+        -Dpekko.cluster.seed-nodes.1=pekko://tracker@t2:25520
+        -Dpekko.cluster.seed-node-timeout=30s
+
+  t2:
+    <<: *tracker
+    hostname: t2
+    environment:
+      <<: *tracker-env
+      TRACKER_ID: T2
+      CANONICAL_HOST: t2
+      JAVA_OPTS: *seed-nodes
+
+  # The only tracker address clients know.
+  tracker:
+    image: nginx:alpine
+    networks: [ds-net]
+    depends_on: [t1, t2]
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:8080"
+
+  client-a:
+    <<: *client
+    hostname: client-a
+    environment:
+      PEER_ID: A
+      CANONICAL_HOST: client-a
+      TRACKER_URL: http://tracker:8080
+      INFO_HASH: demo-file
+      TOTAL_PIECES: "8"
+      PIECES: "0-3"
+
+  client-b:
+    <<: *client
+    hostname: client-b
+    environment:
+      PEER_ID: B
+      CANONICAL_HOST: client-b
+      TRACKER_URL: http://tracker:8080
+      INFO_HASH: demo-file
+      TOTAL_PIECES: "8"
+      PIECES: "4-7"
+
+networks:
+  ds-net:
